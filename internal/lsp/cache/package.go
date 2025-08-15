@@ -16,7 +16,9 @@ package cache
 
 import (
 	"fmt"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"cuelang.org/go/cue/ast"
@@ -302,7 +304,6 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 		return nil
 	}
 
-
 	w := pkg.module.workspace
 	mappers := w.mappers
 
@@ -311,7 +312,6 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 		w.debugLog("file not found")
 		return nil
 	}
-
 
 	srcMapper := mappers[fdfns.File.Pos().File()]
 	if srcMapper == nil {
@@ -347,36 +347,57 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 	}
 
 	valueBuilder := strings.Builder{}
-		for _, target := range targets {
-			w.debugLog(fmt.Sprintf("%v", target.Pos().Filename()))
-			switch  t := target.(type) {
-				case *ast.Ident: {
-				w.debugLog(t.Name)
+	for _, target := range targets {
+		targetMapper := mappers[target.Pos().File()]
+		if targetMapper == nil {
+			w.debugLog("target mapper not found: " + string(target.Pos().Filename()))
+			return nil
+		}
+
+		w.debugLog("target mapper: " + string(targetMapper.URI))
+
+		var targetModule *Module
+		for _, m := range w.modules {
+			if m.rootURI == targetMapper.URI.Dir() {
+				targetModule = m
+			} else if m.rootURI.Encloses(targetMapper.URI) {
+				// cope with the possibility that modules can be nested
+				if targetModule  == nil || targetModule.rootURI.Encloses(m.rootURI) {
+					 targetModule = m
 				}
 			}
+		}
 
-			targetMapper := mappers[target.Pos().File()]
-			if targetMapper == nil {
-				w.debugLog("target mapper not found: " + string(target.Pos().Filename()))
-				return nil
-			}
+		if targetModule == nil {
+			w.debugLog("target module not found for file: " + string(target.Pos().Filename()))
+			return nil
+		}
 
-			w.debugLog("target mapper: "+string(targetMapper.URI))
-
-			targetAstFile, _, err := pkg.module.ReadCUEFile(targetMapper.URI)
-			if err != nil {
-				w.debugLog(err.Error())
-				return nil
-			}
-
-			for _, decl  := range targetAstFile.Decls {
-				if target.Pos().Compare(decl.Pos()) == 0 {
-					for _, comment  := range decl.Comments() {
-						valueBuilder.WriteString(comment.Text())
+		for _, pkg  := range targetModule.packages {
+			for _, f := range pkg.pkg.Files() {
+				syntax := f.Syntax
+				if syntax != nil {
+					moduleFile := path.Join(targetModule.rootURI.Path(), syntax.Filename)
+					if moduleFile == target.Pos().Filename() {
+						w.debugLog("target offset: "+strconv.Itoa(target.Pos().Offset()))
+						for _, decl := range syntax.Decls {
+							w.debugLog("decl offest: "+strconv.Itoa(decl.Pos().Offset()))
+								for _, comment := range ast.Comments(decl) {
+									valueBuilder.WriteString(comment.Text())
+								}
+						}
 					}
 				}
 			}
 		}
+
+		// targetAstFile, _, err := pkg.module.ReadCUEFile(targetMapper.URI)
+		// if err != nil {
+		// 	w.debugLog(err.Error())
+		// 	return nil
+		// }
+
+	}
 
 	value := valueBuilder.String()
 	return &protocol.Hover{
