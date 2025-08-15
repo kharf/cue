@@ -17,6 +17,7 @@ package cache
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/token"
@@ -45,7 +46,10 @@ type packageOrModule interface {
 	// If a directory contains an active file then that directory is an
 	// active directory, as are all of its ancestors, up to the module
 	// root (inclusive).
-	ActiveFilesAndDirs(files map[protocol.DocumentURI][]packageOrModule, dirs map[protocol.DocumentURI]struct{})
+	ActiveFilesAndDirs(
+		files map[protocol.DocumentURI][]packageOrModule,
+		dirs map[protocol.DocumentURI]struct{},
+	)
 }
 
 type status uint8
@@ -90,7 +94,7 @@ type Package struct {
 	// whenever the package status transitions to splendid.
 	definitions *definitions.Definitions
 	// mappers is for converting between different file coordinate
-	// systems. This is updated alongsite definitions.
+	// systems. This is updated alongside definitions.
 	mappers map[*token.File]*protocol.Mapper
 }
 
@@ -118,7 +122,10 @@ func (pkg *Package) Encloses(file protocol.DocumentURI) bool {
 }
 
 // ActiveFilesAndDirs implements [packageOrModule]
-func (pkg *Package) ActiveFilesAndDirs(files map[protocol.DocumentURI][]packageOrModule, dirs map[protocol.DocumentURI]struct{}) {
+func (pkg *Package) ActiveFilesAndDirs(
+	files map[protocol.DocumentURI][]packageOrModule,
+	dirs map[protocol.DocumentURI]struct{},
+) {
 	if pkg.pkg == nil {
 		return
 	}
@@ -213,7 +220,10 @@ func (pkg *Package) setStatus(status status) {
 // coordinate to some path element that can be resolved to one or more
 // ast nodes, and returns the positions of the definitions of those
 // nodes.
-func (pkg *Package) Definition(uri protocol.DocumentURI, pos protocol.Position) []protocol.Location {
+func (pkg *Package) Definition(
+	uri protocol.DocumentURI,
+	pos protocol.Position,
+) []protocol.Location {
 	dfns := pkg.definitions
 	if dfns == nil {
 		return nil
@@ -284,4 +294,95 @@ func (pkg *Package) Definition(uri protocol.DocumentURI, pos protocol.Position) 
 		}
 	}
 	return locations
+}
+
+func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *protocol.Hover {
+	dfns := pkg.definitions
+	if dfns == nil {
+		return nil
+	}
+
+
+	w := pkg.module.workspace
+	mappers := w.mappers
+
+	fdfns := dfns.ForFile(uri.Path())
+	if fdfns == nil {
+		w.debugLog("file not found")
+		return nil
+	}
+
+
+	srcMapper := mappers[fdfns.File.Pos().File()]
+	if srcMapper == nil {
+		w.debugLog("mapper not found: " + string(uri))
+		return nil
+	}
+
+	var targets []ast.Node
+	// If ForOffset returns no results, and if it's safe to do so, we
+	// back off the Character offset (column number) by 1 and try
+	// again. This can help when the caret symbol is a | and is placed
+	// straight after the end of a path element.
+	posAdj := []uint32{0, 1}
+	if pos.Character == 0 {
+		posAdj = posAdj[:1]
+	}
+	for _, adj := range posAdj {
+		pos := pos
+		pos.Character -= adj
+		offset, err := srcMapper.PositionOffset(pos)
+		if err != nil {
+			w.debugLog(err.Error())
+			return nil
+		}
+
+		targets = fdfns.ForOffset(offset)
+		if len(targets) > 0 {
+			break
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	valueBuilder := strings.Builder{}
+		for _, target := range targets {
+			w.debugLog(fmt.Sprintf("%v", target.Pos().Filename()))
+			switch  t := target.(type) {
+				case *ast.Ident: {
+				w.debugLog(t.Name)
+				}
+			}
+
+			targetMapper := mappers[target.Pos().File()]
+			if targetMapper == nil {
+				w.debugLog("target mapper not found: " + string(target.Pos().Filename()))
+				return nil
+			}
+
+			w.debugLog("target mapper: "+string(targetMapper.URI))
+
+			targetAstFile, _, err := pkg.module.ReadCUEFile(targetMapper.URI)
+			if err != nil {
+				w.debugLog(err.Error())
+				return nil
+			}
+
+			for _, decl  := range targetAstFile.Decls {
+				if target.Pos().Compare(decl.Pos()) == 0 {
+					for _, comment  := range decl.Comments() {
+						valueBuilder.WriteString(comment.Text())
+					}
+				}
+			}
+		}
+
+	value := valueBuilder.String()
+	return &protocol.Hover{
+		Contents: protocol.MarkupContent{
+			Kind:  protocol.Markdown,
+			Value: value,
+		},
+	}
 }
