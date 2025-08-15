@@ -362,8 +362,8 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 				targetModule = m
 			} else if m.rootURI.Encloses(targetMapper.URI) {
 				// cope with the possibility that modules can be nested
-				if targetModule  == nil || targetModule.rootURI.Encloses(m.rootURI) {
-					 targetModule = m
+				if targetModule == nil || targetModule.rootURI.Encloses(m.rootURI) {
+					targetModule = m
 				}
 			}
 		}
@@ -373,18 +373,30 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 			return nil
 		}
 
-		for _, pkg  := range targetModule.packages {
+		for _, pkg := range targetModule.packages {
 			for _, f := range pkg.pkg.Files() {
 				syntax := f.Syntax
 				if syntax != nil {
-					moduleFile := path.Join(targetModule.rootURI.Path(), syntax.Filename)
-					if moduleFile == target.Pos().Filename() {
-						w.debugLog("target offset: "+strconv.Itoa(target.Pos().Offset()))
+					var extFile string
+					// for some reason path is only absolute when the file has been loaded into the editos buffer once in a session,
+					// its relative otherwise.
+					// Also the offset is wrong when its relative.
+					if path.IsAbs(syntax.Filename) {
+						extFile = syntax.Filename
+					} else {
+						extFile = path.Join(targetModule.rootURI.Path(), syntax.Filename)
+					}
+
+					w.debugLog("module file: " + extFile)
+					if extFile == target.Pos().Filename() {
+						w.debugLog("target offset: " + strconv.Itoa(target.Pos().Offset()))
+						w.debugLog("target line: " + strconv.Itoa(target.Pos().Line()))
 						for _, decl := range syntax.Decls {
-							w.debugLog("decl offest: "+strconv.Itoa(decl.Pos().Offset()))
-								for _, comment := range ast.Comments(decl) {
-									valueBuilder.WriteString(comment.Text())
-								}
+							w.debugLog("decl offest: " + strconv.Itoa(decl.Pos().Offset()))
+							w.debugLog("decl line: " + strconv.Itoa(decl.Pos().Line()))
+							for _, comment := range ast.Comments(decl) {
+								valueBuilder.WriteString(comment.Text())
+							}
 						}
 					}
 				}
