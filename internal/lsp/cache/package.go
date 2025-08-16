@@ -16,9 +16,7 @@ package cache
 
 import (
 	"fmt"
-	"path"
 	"slices"
-	"strconv"
 	"strings"
 
 	"cuelang.org/go/cue/ast"
@@ -64,6 +62,18 @@ const (
 	deleted
 )
 
+type MapperAndAst struct {
+	*protocol.Mapper
+	AstFile *ast.File
+}
+
+func NewMapperAndAst(mapper *protocol.Mapper, astFile *ast.File) *MapperAndAst {
+	return &MapperAndAst{
+		Mapper:  mapper,
+		AstFile: astFile,
+	}
+}
+
 // Package models a single CUE package within a CUE module.
 type Package struct {
 	// immutable fields: all set at construction only
@@ -97,7 +107,7 @@ type Package struct {
 	definitions *definitions.Definitions
 	// mappers is for converting between different file coordinate
 	// systems. This is updated alongside definitions.
-	mappers map[*token.File]*protocol.Mapper
+	mappers map[*token.File]*MapperAndAst
 }
 
 func NewPackage(module *Module, importPath ast.ImportPath, dir protocol.DocumentURI) *Package {
@@ -186,15 +196,16 @@ func (pkg *Package) setStatus(status status) {
 
 		modpkg := pkg.pkg
 		files := modpkg.Files()
-		mappers := make(map[*token.File]*protocol.Mapper, len(files))
+		mappers := make(map[*token.File]*MapperAndAst, len(files))
 		astFiles := make([]*ast.File, len(files))
 		for i, f := range files {
 			astFiles[i] = f.Syntax
 			uri := pkg.module.rootURI + protocol.DocumentURI("/"+f.FilePath)
 			file := f.Syntax.Pos().File()
 			mapper := protocol.NewMapper(uri, file.Content())
-			mappers[file] = mapper
-			w.mappers[file] = mapper
+			mapperAndAst := NewMapperAndAst(mapper, f.Syntax)
+			mappers[file] = mapperAndAst
+			w.mappers[file] = mapperAndAst
 		}
 		forPackage := func(importPath string) *definitions.Definitions {
 			for _, imported := range modpkg.Imports() {
@@ -226,52 +237,13 @@ func (pkg *Package) Definition(
 	uri protocol.DocumentURI,
 	pos protocol.Position,
 ) []protocol.Location {
-	dfns := pkg.definitions
-	if dfns == nil {
+	targets := pkg.targets(uri, pos)
+	if targets == nil {
 		return nil
 	}
 
 	w := pkg.module.workspace
 	mappers := w.mappers
-
-	fdfns := dfns.ForFile(uri.Path())
-	if fdfns == nil {
-		w.debugLog("file not found")
-		return nil
-	}
-
-	srcMapper := mappers[fdfns.File.Pos().File()]
-	if srcMapper == nil {
-		w.debugLog("mapper not found: " + string(uri))
-		return nil
-	}
-
-	var targets []ast.Node
-	// If ForOffset returns no results, and if it's safe to do so, we
-	// back off the Character offset (column number) by 1 and try
-	// again. This can help when the caret symbol is a | and is placed
-	// straight after the end of a path element.
-	posAdj := []uint32{0, 1}
-	if pos.Character == 0 {
-		posAdj = posAdj[:1]
-	}
-	for _, adj := range posAdj {
-		pos := pos
-		pos.Character -= adj
-		offset, err := srcMapper.PositionOffset(pos)
-		if err != nil {
-			w.debugLog(err.Error())
-			return nil
-		}
-
-		targets = fdfns.ForOffset(offset)
-		if len(targets) > 0 {
-			break
-		}
-	}
-	if len(targets) == 0 {
-		return nil
-	}
 
 	locations := make([]protocol.Location, len(targets))
 	for i, target := range targets {
@@ -298,7 +270,10 @@ func (pkg *Package) Definition(
 	return locations
 }
 
-func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *protocol.Hover {
+func (pkg *Package) targets(
+	uri protocol.DocumentURI,
+	pos protocol.Position,
+) []ast.Node {
 	dfns := pkg.definitions
 	if dfns == nil {
 		return nil
@@ -345,77 +320,43 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 	if len(targets) == 0 {
 		return nil
 	}
+	return targets
+}
 
-	valueBuilder := strings.Builder{}
+// Hover attempts to treat the given uri and position as a file
+// coordinate to some path element that can be resolved to one or more
+// ast nodes, and returns the documentation of the definitions of those
+// nodes.
+func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *protocol.Hover {
+	targets := pkg.targets(uri, pos)
+	if targets == nil {
+		return nil
+	}
+
+	w := pkg.module.workspace
+	mappers := w.mappers
+
+	vb := strings.Builder{}
 	for _, target := range targets {
 		targetMapper := mappers[target.Pos().File()]
 		if targetMapper == nil {
-			w.debugLog("target mapper not found: " + string(target.Pos().Filename()))
+			w.debugLog("target mapper not found: " + string(uri))
 			return nil
 		}
 
-		w.debugLog("target mapper: " + string(targetMapper.URI))
-
-		var targetModule *Module
-		for _, m := range w.modules {
-			if m.rootURI == targetMapper.URI.Dir() {
-				targetModule = m
-			} else if m.rootURI.Encloses(targetMapper.URI) {
-				// cope with the possibility that modules can be nested
-				if targetModule == nil || targetModule.rootURI.Encloses(m.rootURI) {
-					targetModule = m
+		for _, decl := range targetMapper.AstFile.Decls {
+			if target.Pos().Compare(decl.Pos()) == 0 {
+				for _, comment := range ast.Comments(decl) {
+					vb.WriteString(comment.Text())
 				}
 			}
 		}
-
-		if targetModule == nil {
-			w.debugLog("target module not found for file: " + string(target.Pos().Filename()))
-			return nil
-		}
-
-		for _, pkg := range targetModule.packages {
-			for _, f := range pkg.pkg.Files() {
-				syntax := f.Syntax
-				if syntax != nil {
-					var extFile string
-					// for some reason path is only absolute when the file has been loaded into the editos buffer once in a session,
-					// its relative otherwise.
-					// Also the offset is wrong when its relative.
-					if path.IsAbs(syntax.Filename) {
-						extFile = syntax.Filename
-					} else {
-						extFile = path.Join(targetModule.rootURI.Path(), syntax.Filename)
-					}
-
-					w.debugLog("module file: " + extFile)
-					if extFile == target.Pos().Filename() {
-						w.debugLog("target offset: " + strconv.Itoa(target.Pos().Offset()))
-						w.debugLog("target line: " + strconv.Itoa(target.Pos().Line()))
-						for _, decl := range syntax.Decls {
-							w.debugLog("decl offest: " + strconv.Itoa(decl.Pos().Offset()))
-							w.debugLog("decl line: " + strconv.Itoa(decl.Pos().Line()))
-							for _, comment := range ast.Comments(decl) {
-								valueBuilder.WriteString(comment.Text())
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// targetAstFile, _, err := pkg.module.ReadCUEFile(targetMapper.URI)
-		// if err != nil {
-		// 	w.debugLog(err.Error())
-		// 	return nil
-		// }
-
 	}
 
-	value := valueBuilder.String()
 	return &protocol.Hover{
 		Contents: protocol.MarkupContent{
 			Kind:  protocol.Markdown,
-			Value: value,
+			Value: vb.String(),
 		},
 	}
 }

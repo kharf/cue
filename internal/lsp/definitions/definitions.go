@@ -272,8 +272,8 @@ type Definitions struct {
 	// passed to [Analyse]. This is not the same as the
 	// [pkgNode.navigable] (which is the entire package scope).
 	pkgDecls *navigableBindings
-	// byFilename maps file names to [FileDefinitions]
-	byFilename map[string]*FileDefinitions
+	// ByFilename maps file names to [FileDefinitions]
+	ByFilename map[string]*FileDefinitions
 	forPackage DefinitionsForPackageFunc
 }
 
@@ -289,7 +289,7 @@ func Analyse(forPackage DefinitionsForPackageFunc, files ...*ast.File) *Definiti
 	}
 	dfns := &Definitions{
 		pkgDecls:   &navigableBindings{},
-		byFilename: make(map[string]*FileDefinitions, len(files)),
+		ByFilename: make(map[string]*FileDefinitions, len(files)),
 		forPackage: forPackage,
 	}
 
@@ -299,7 +299,7 @@ func Analyse(forPackage DefinitionsForPackageFunc, files ...*ast.File) *Definiti
 
 	for _, file := range files {
 		pkgNode.newAstNode(nil, file, navigable)
-		dfns.byFilename[file.Filename] = &FileDefinitions{
+		dfns.ByFilename[file.Filename] = &FileDefinitions{
 			pkgNode:     pkgNode,
 			resolutions: make(map[int][]ast.Node),
 			File:        file,
@@ -319,7 +319,12 @@ func Analyse(forPackage DefinitionsForPackageFunc, files ...*ast.File) *Definiti
 // unprocessed would be the field's value. The navigableBindings are
 // the (potentially shared) bindings which are used in the resolution
 // of the non-first-elements of a path.
-func (dfns *Definitions) newAstNode(parent *astNode, key ast.Node, unprocessed ast.Node, navigable *navigableBindings) *astNode {
+func (dfns *Definitions) newAstNode(
+	parent *astNode,
+	key ast.Node,
+	unprocessed ast.Node,
+	navigable *navigableBindings,
+) *astNode {
 	if navigable == nil {
 		navigable = &navigableBindings{}
 	}
@@ -347,7 +352,7 @@ func (dfns *Definitions) addResolution(start token.Pos, length int, targets []*n
 
 	startPosition := start.Position()
 	filename := startPosition.Filename
-	resolutions := dfns.byFilename[filename].resolutions
+	resolutions := dfns.ByFilename[filename].resolutions
 	startOffset := startPosition.Offset
 	var keys []ast.Node
 	for _, nav := range targets {
@@ -364,7 +369,7 @@ func (dfns *Definitions) addResolution(start token.Pos, length int, targets []*n
 
 // ForFile looks up the [FileDefinitions] for the given filename.
 func (dfns *Definitions) ForFile(filename string) *FileDefinitions {
-	return dfns.byFilename[filename]
+	return dfns.ByFilename[filename]
 }
 
 // FileDefinitions provides methods to resolve file offsets within a
@@ -483,7 +488,11 @@ type astNode struct {
 // astNode. This is a light wrapper around
 // [Definitions.newAstNode]. See those docs for more details on the
 // arguments to this function.
-func (n *astNode) newAstNode(key ast.Node, unprocessed ast.Node, navigable *navigableBindings) *astNode {
+func (n *astNode) newAstNode(
+	key ast.Node,
+	unprocessed ast.Node,
+	navigable *navigableBindings,
+) *astNode {
 	s := n.dfns.newAstNode(n, key, unprocessed, navigable)
 	n.allChildren = append(n.allChildren, s)
 	return s

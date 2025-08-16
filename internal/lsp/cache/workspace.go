@@ -54,7 +54,7 @@ type Workspace struct {
 	folders  []*WorkspaceFolder
 	modules  map[protocol.DocumentURI]*Module
 	packages map[ast.ImportPath]*Package
-	mappers  map[*token.File]*protocol.Mapper
+	mappers  map[*token.File]*MapperAndAst
 
 	// These are cached values. Do not use these directly, instead, use
 	// [Workspace.ActiveFilesAndDirs]
@@ -70,7 +70,7 @@ func NewWorkspace(cache *Cache, debugLog func(string)) *Workspace {
 		debugLog:  debugLog,
 		modules:   make(map[protocol.DocumentURI]*Module),
 		packages:  make(map[ast.ImportPath]*Package),
-		mappers:   make(map[*token.File]*protocol.Mapper),
+		mappers:   make(map[*token.File]*MapperAndAst),
 	}
 }
 
@@ -126,7 +126,9 @@ func (w *Workspace) RemoveFolder(dir protocol.DocumentURI) {
 // An LSP client/editor can inform the server that its options have
 // changed. It's up to the server to query the client for options for
 // each workspace folder.
-func (w *Workspace) UpdateFolderOptions(fetchFolderOptions func(folder protocol.DocumentURI) (*settings.Options, error)) error {
+func (w *Workspace) UpdateFolderOptions(
+	fetchFolderOptions func(folder protocol.DocumentURI) (*settings.Options, error),
+) error {
 	for _, wf := range w.folders {
 		options, err := fetchFolderOptions(wf.dir)
 		if err != nil {
@@ -165,7 +167,9 @@ func (w *Workspace) UpdateFolderOptions(fetchFolderOptions func(folder protocol.
 // most clients that support both, and do not have issues with Windows driver
 // letter casing:
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#relativePattern
-func (w *Workspace) FileWatchingGlobPatterns(ctx context.Context) map[protocol.RelativePattern]struct{} {
+func (w *Workspace) FileWatchingGlobPatterns(
+	ctx context.Context,
+) map[protocol.RelativePattern]struct{} {
 	patterns := make(map[protocol.RelativePattern]struct{})
 
 	// from golang/go#42348:
@@ -408,7 +412,9 @@ func (w *Workspace) DidModifyFiles(ctx context.Context, modifications []file.Mod
 	return w.reloadPackages()
 }
 
-func (w *Workspace) updateOverlays(modifications []file.Modification) (map[protocol.DocumentURI]fscache.FileHandle, error) {
+func (w *Workspace) updateOverlays(
+	modifications []file.Modification,
+) (map[protocol.DocumentURI]fscache.FileHandle, error) {
 	now := time.Now()
 	updatedFiles := make(map[protocol.DocumentURI]fscache.FileHandle)
 
@@ -449,7 +455,12 @@ func (w *Workspace) updateOverlays(modifications []file.Modification) (map[proto
 				}
 
 				if mod.Version <= fh.Version() {
-					return fmt.Errorf("updateOverlays: modification from client for %v provides non-increasing version (existing: %d; supplied: %d)", mod.URI, fh.Version(), mod.Version)
+					return fmt.Errorf(
+						"updateOverlays: modification from client for %v provides non-increasing version (existing: %d; supplied: %d)",
+						mod.URI,
+						fh.Version(),
+						mod.Version,
+					)
 				}
 
 				content := fh.Content()
@@ -722,7 +733,13 @@ func (w *Workspace) reloadPackages() error {
 		modRoot := loadedPkg.ModRoot()
 		modFS, ok := modRoot.FS.(module.OSRootFS)
 		if !ok {
-			panic(fmt.Sprintf("%v Unable to load module because fs is not an OSRootFS %v", loadedPkg.Mod().Path(), modRoot.FS))
+			panic(
+				fmt.Sprintf(
+					"%v Unable to load module because fs is not an OSRootFS %v",
+					loadedPkg.Mod().Path(),
+					modRoot.FS,
+				),
+			)
 		}
 		modRootPath := filepath.Join(modFS.OSRoot(), filepath.FromSlash(modRoot.Dir))
 		modRootURI := protocol.URIFromPath(modRootPath)
@@ -879,7 +896,11 @@ func (w *Workspace) reloadPackages() error {
 	return nil
 }
 
-func changedText(uri protocol.DocumentURI, content []byte, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+func changedText(
+	uri protocol.DocumentURI,
+	content []byte,
+	changes []protocol.TextDocumentContentChangeEvent,
+) ([]byte, error) {
 	if len(changes) == 0 {
 		return nil, fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
 	}
@@ -892,7 +913,11 @@ func changedText(uri protocol.DocumentURI, content []byte, changes []protocol.Te
 	return applyIncrementalChanges(uri, content, changes)
 }
 
-func applyIncrementalChanges(uri protocol.DocumentURI, content []byte, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+func applyIncrementalChanges(
+	uri protocol.DocumentURI,
+	content []byte,
+	changes []protocol.TextDocumentContentChangeEvent,
+) ([]byte, error) {
 	for _, change := range changes {
 		// TODO(adonovan): refactor to use diff.Apply, which is robust w.r.t.
 		// out-of-order or overlapping changes---and much more efficient.
