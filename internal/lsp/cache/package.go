@@ -344,12 +344,8 @@ func (pkg *Package) Hover(uri protocol.DocumentURI, pos protocol.Position) *prot
 			return nil
 		}
 
-		for _, decl := range targetMapper.AstFile.Decls {
-			if target.Pos().Compare(decl.Pos()) == 0 {
-				for _, comment := range ast.Comments(decl) {
-					vb.WriteString(comment.Text())
-				}
-			}
+		for _, comment := range ast.Comments(target) {
+			vb.WriteString(comment.Text())
 		}
 	}
 

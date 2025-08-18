@@ -300,7 +300,7 @@ func Analyse(forPackage DefinitionsForPackageFunc, files ...*ast.File) *Definiti
 	for _, file := range files {
 		pkgNode.newAstNode(nil, file, navigable)
 		dfns.ByFilename[file.Filename] = &FileDefinitions{
-			pkgNode:     pkgNode,
+			PkgNode:     pkgNode,
 			resolutions: make(map[int][]ast.Node),
 			File:        file,
 		}
@@ -331,12 +331,12 @@ func (dfns *Definitions) newAstNode(
 	s := &astNode{
 		dfns:        dfns,
 		parent:      parent,
-		unprocessed: unprocessed,
+		Unprocessed: unprocessed,
 		navigable:   navigable,
 	}
 	navigable.contributingNodes = append(navigable.contributingNodes, s)
 	if key != nil {
-		s.key = key
+		s.Key = key
 		s.addRange(key)
 	}
 	return s
@@ -357,8 +357,9 @@ func (dfns *Definitions) addResolution(start token.Pos, length int, targets []*n
 	var keys []ast.Node
 	for _, nav := range targets {
 		for _, lex := range nav.contributingNodes {
-			if lex.key != nil {
-				keys = append(keys, lex.key)
+			if lex.Key != nil {
+				ast.SetComments(lex.Key, lex.comments)
+				keys = append(keys, lex.Key)
 			}
 		}
 	}
@@ -375,7 +376,7 @@ func (dfns *Definitions) ForFile(filename string) *FileDefinitions {
 // FileDefinitions provides methods to resolve file offsets within a
 // certain file to their definitions.
 type FileDefinitions struct {
-	pkgNode *astNode
+	PkgNode *astNode
 	// resolutions caches the results of previous lookups, ensuring
 	// that subsequent calls to [ForOffset] for a given offset are
 	// O(1). The map key is the byte offset within the file.
@@ -398,7 +399,7 @@ func (fdfns *FileDefinitions) ForOffset(offset int) []ast.Node {
 	resolutions[offset] = []ast.Node{}
 
 	filename := fdfns.File.Filename
-	pkgNode := fdfns.pkgNode
+	pkgNode := fdfns.PkgNode
 	pkgNode.eval()
 	seen := make(map[*astNode]struct{})
 	worklist := []*astNode{pkgNode}
@@ -411,7 +412,7 @@ func (fdfns *FileDefinitions) ForOffset(offset int) []ast.Node {
 		}
 		seen[s] = struct{}{}
 
-		for _, s := range s.allChildren {
+		for _, s := range s.AllChildren {
 			s.eval()
 			if s.contains(filename, offset) {
 				worklist = append(worklist, s)
@@ -420,7 +421,6 @@ func (fdfns *FileDefinitions) ForOffset(offset int) []ast.Node {
 	}
 
 	//pkgNode.dump(1)
-
 	return resolutions[offset]
 }
 
@@ -437,16 +437,16 @@ type astNode struct {
 	dfns *Definitions
 	// parent is the parent astNode.
 	parent *astNode
-	// unprocessed is the initial node that this astNode is solely
+	// Unprocessed is the initial node that this astNode is solely
 	// responsible for evaluating. Once a call to [node.eval] has
-	// returned, unprocessed must never be modified.
-	unprocessed ast.Node
-	// key is the position that is considered to define this node. For
-	// example, if a node represents `a: {}` then key is set to the `a`
+	// returned, Unprocessed must never be modified.
+	Unprocessed ast.Node
+	// Key is the position that is considered to define this node. For
+	// example, if a node represents `a: {}` then Key is set to the `a`
 	// ident. This can be nil, such as when a node is an
 	// expression. For example in the path {a: 3, b: a}.b, a node with
-	// no key will be created, containing the structlit {a: 3, b: a}.
-	key ast.Node
+	// no Key will be created, containing the structlit {a: 3, b: a}.
+	Key ast.Node
 	// An astNode may have several names. For example, if a node is the
 	// result of a field with an alias, e.g. l=x: e, then in its parent
 	// node it'll be stored (in the bindings field) under both l and
@@ -460,13 +460,13 @@ type astNode struct {
 	// node y.z resolves to, its navigable bindings will be stored in
 	// the resolvesTo field of x.
 	resolvesTo []*navigableBindings
-	// allChildren contains every astNode that is a child of this
+	// AllChildren contains every astNode that is a child of this
 	// node. When searching for a given file-offset, these nodes are
 	// tested for whether they contain the desired file-offset.
-	allChildren []*astNode
-	// bindings contains all bindings for this astNode. Note the map's
+	AllChildren []*astNode
+	// Bindings contains all Bindings for this astNode. Note the map's
 	// values are slices because a single node can have multiple
-	// bindings for the same key. For example:
+	// Bindings for the same key. For example:
 	//
 	//	x: bool
 	//	x: true
@@ -476,12 +476,14 @@ type astNode struct {
 	// an astNode itself) correspond to a lexical scope. Bindings are
 	// more general than fields: they include aliases and
 	// comprehensions as well as normal fields.
-	bindings map[string][]*astNode
+	Bindings map[string][]*astNode
 	// navigable provides access to the "navigable bindings" that is
 	// shared between multiple astNodes that should be considered
 	// "merged together".
 	navigable *navigableBindings
 	ranges    *rangeset.FilenameRangeSet
+
+	comments []*ast.CommentGroup
 }
 
 // newAstNode creates a new [astNodes] which is a child of the current
@@ -494,7 +496,7 @@ func (n *astNode) newAstNode(
 	navigable *navigableBindings,
 ) *astNode {
 	s := n.dfns.newAstNode(n, key, unprocessed, navigable)
-	n.allChildren = append(n.allChildren, s)
+	n.AllChildren = append(n.AllChildren, s)
 	return s
 }
 
@@ -517,9 +519,9 @@ func (n *astNode) dump(depth int) {
 		}
 	}
 
-	if len(n.bindings) > 0 {
+	if len(n.Bindings) > 0 {
 		printf(" Lexical:")
-		for name, bindings := range n.bindings {
+		for name, bindings := range n.Bindings {
 			printf("  %s:", name)
 			for _, binding := range bindings {
 				binding.dump(depth + 1)
@@ -527,9 +529,9 @@ func (n *astNode) dump(depth int) {
 		}
 	}
 
-	if len(n.allChildren) > 0 {
+	if len(n.AllChildren) > 0 {
 		printf(" All children:")
-		for _, s := range n.allChildren {
+		for _, s := range n.AllChildren {
 			s.dump(depth + 1)
 		}
 	}
@@ -577,12 +579,12 @@ func (n *astNode) contains(filename string, offset int) bool {
 // or before [astNode.contains] is invoked. See also the package level
 // documentation.
 func (n *astNode) eval() {
-	if n.unprocessed == nil {
+	if n.Unprocessed == nil {
 		return
 	}
 
-	unprocessed := []ast.Node{n.unprocessed}
-	n.unprocessed = nil
+	unprocessed := []ast.Node{n.Unprocessed}
+	n.Unprocessed = nil
 
 	var embeddedResolvable, resolvable []ast.Expr
 
@@ -592,6 +594,7 @@ func (n *astNode) eval() {
 
 		n.addRange(node)
 
+		n.comments = ast.Comments(node)
 		switch node := node.(type) {
 		case *ast.File:
 			for _, decl := range node.Decls {
@@ -650,7 +653,7 @@ func (n *astNode) eval() {
 				// package declarations have been found and added to the
 				// pkgDecls.
 				dfns.pkgNode.eval()
-				for _, child := range dfns.pkgNode.allChildren {
+				for _, child := range dfns.pkgNode.AllChildren {
 					child.eval()
 				}
 				n.dfns.addResolution(node.Path.Pos(), len(str)+2, []*navigableBindings{dfns.pkgDecls})
@@ -760,6 +763,9 @@ func (n *astNode) eval() {
 					label = expr
 				}
 			}
+
+			ast.SetComments(node.Value, n.comments)
+			ast.SetComments(label, n.comments)
 
 			var binding *astNode
 			switch label := label.(type) {
@@ -924,7 +930,7 @@ func navigateBindingsByName(navigables []*navigableBindings, name string) []*nav
 			node.eval()
 			navigables = append(navigables, node.resolvesTo...)
 
-			if spec, ok := node.key.(*ast.ImportSpec); ok {
+			if spec, ok := node.Key.(*ast.ImportSpec); ok {
 				str, err := strconv.Unquote(spec.Path.Value)
 				if err != nil {
 					continue
@@ -935,7 +941,7 @@ func navigateBindingsByName(navigables []*navigableBindings, name string) []*nav
 				}
 				pkgNode := dfns.pkgNode
 				pkgNode.eval()
-				for _, node := range pkgNode.allChildren {
+				for _, node := range pkgNode.AllChildren {
 					navigables = append(navigables, node.navigable)
 				}
 			}
@@ -962,7 +968,7 @@ func navigateBindingsByName(navigables []*navigableBindings, name string) []*nav
 // [astNode.resolve] method).
 func (n *astNode) resolvePathRoot(name string) *navigableBindings {
 	for ; n != nil; n = n.parent {
-		if bindings, found := n.bindings[name]; found {
+		if bindings, found := n.Bindings[name]; found {
 			if len(bindings) == 1 {
 				binding := bindings[0]
 				if binding.name == "" {
@@ -993,7 +999,7 @@ func (n *astNode) resolvePathRoot(name string) *navigableBindings {
 					// but we test it here just in case.
 					panic(fmt.Sprintf("Different navigable bindings for name: %q", name))
 				}
-				if _, ok := binding.key.(*ast.Ident); ok {
+				if _, ok := binding.Key.(*ast.Ident); ok {
 					identFound = true
 				}
 			}
@@ -1068,8 +1074,8 @@ func (n *astNode) newBinding(name string, key ast.Node, unprocessed ast.Node) *a
 // appendBinding stores the binding under the given name in the
 // current astNode only.
 func (n *astNode) appendBinding(name string, binding *astNode) {
-	if n.bindings == nil {
-		n.bindings = make(map[string][]*astNode)
+	if n.Bindings == nil {
+		n.Bindings = make(map[string][]*astNode)
 	}
-	n.bindings[name] = append(n.bindings[name], binding)
+	n.Bindings[name] = append(n.Bindings[name], binding)
 }

@@ -1059,6 +1059,7 @@ a: {
 			archive: `-- a.cue --
 package a
 
+// i am foo
 x: 12
 -- b.cue --
 package b
